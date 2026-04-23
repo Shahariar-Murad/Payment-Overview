@@ -128,13 +128,13 @@ def load_data(use_uploads=False, bp_bytes=None, cb_bytes=None,
     bp = pd.read_csv(bp_src)
     # Keep unique merchant order IDs (retry logic – keep first occurrence)
     bp = bp.drop_duplicates(subset=["merchantOrderId"], keep="first")
-    bp["psp"]        = bp["pspName"]
-    bp["mid"]        = bp["midAlias"]
-    bp["country"]    = bp["country"]
-    bp["amount_usd"] = bp["amount"].astype(float)
-    bp["method"]     = bp["paymentMethod"]
+    bp["psp"]        = bp["pspName"].fillna("Unknown").astype(str)
+    bp["mid"]        = bp["midAlias"].fillna("Unknown").astype(str)
+    bp["country"]    = bp["country"].fillna("Unknown").astype(str)
+    bp["amount_usd"] = pd.to_numeric(bp["amount"], errors="coerce")
+    bp["method"]     = bp["paymentMethod"].fillna("Unknown").astype(str)
     bp["is_success"] = bp["status"].str.lower() == "approved"
-    bp["status_raw"] = bp["status"]
+    bp["status_raw"] = bp["status"].fillna("unknown").astype(str)
     bp["source"]     = "BridgerPay"
     frames.append(bp[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
@@ -172,11 +172,11 @@ def load_data(use_uploads=False, bp_bytes=None, cb_bytes=None,
     # Unique merchant order IDs
     pp = pp.drop_duplicates(subset=["Merchant Order ID"], keep="first")
     pp["psp"]        = "PayProcc"
-    pp["mid"]        = pp["MID"]
-    pp["country"]    = pp["Payer Country"]
-    pp["method"]     = pp["Payment Method"]
+    pp["mid"]        = pp["MID"].fillna("Unknown").astype(str)
+    pp["country"]    = pp["Payer Country"].fillna("Unknown").astype(str)
+    pp["method"]     = pp["Payment Method"].fillna("Unknown").astype(str)
     pp["is_success"] = pp["Status"].str.lower() == "success"
-    pp["status_raw"] = pp["Status"]
+    pp["status_raw"] = pp["Status"].fillna("unknown").astype(str)
     pp["source"]     = "PayProcc"
     frames.append(pp[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
@@ -186,17 +186,19 @@ def load_data(use_uploads=False, bp_bytes=None, cb_bytes=None,
     zp = zp[zp["payment_channel"].isin(["Apple Pay", "Google Pay"])]
     zp["psp"]        = "Zen Pay"
     zp["mid"]        = "Zen-Pay-MID-1"
-    zp["country"]    = zp["customer_country"]
+    zp["country"]    = zp["customer_country"].fillna("Unknown").astype(str)
     zp["amount_usd"] = pd.to_numeric(zp["transaction_amount"], errors="coerce")
-    zp["method"]     = zp["payment_channel"]
+    zp["method"]     = zp["payment_channel"].fillna("Unknown").astype(str)
     zp["is_success"] = zp["transaction_state"].str.upper() == "ACCEPTED"
-    zp["status_raw"] = zp["transaction_state"]
+    zp["status_raw"] = zp["transaction_state"].fillna("unknown").astype(str)
     zp["source"]     = "Zen Pay"
     frames.append(zp[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
     df = pd.concat(frames, ignore_index=True)
     df["amount_usd"] = pd.to_numeric(df["amount_usd"], errors="coerce")
-    df["country"] = df["country"].fillna("Unknown")
+    # Ensure all string columns are clean — no NaN, no mixed types
+    for col in ["source","psp","mid","country","method","status_raw"]:
+        df[col] = df[col].fillna("Unknown").astype(str)
     return df
 
 # ── Bootstrap: load data from disk or uploads ─────────────────────────────
@@ -216,11 +218,16 @@ else:
 # ── Sidebar Filters ───────────────────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 Filters")
 
-all_sources   = sorted(df_all["source"].unique())
-all_psps      = sorted(df_all["psp"].unique())
-all_mids      = sorted(df_all["mid"].unique())
-all_countries = sorted([c for c in df_all["country"].unique() if c not in ("N/A","Unknown")])
-all_methods   = sorted(df_all["method"].unique())
+def safe_sorted_unique(series, exclude=()):
+    """Return sorted unique string values, dropping NaN and excluded values."""
+    vals = [str(v) for v in series.dropna().unique() if str(v) not in exclude]
+    return sorted(vals)
+
+all_sources   = safe_sorted_unique(df_all["source"])
+all_psps      = safe_sorted_unique(df_all["psp"])
+all_mids      = safe_sorted_unique(df_all["mid"])
+all_countries = safe_sorted_unique(df_all["country"], exclude=("N/A", "Unknown", "nan"))
+all_methods   = safe_sorted_unique(df_all["method"])
 
 sel_sources = st.sidebar.multiselect("PSP Source", all_sources, default=all_sources)
 sel_psps    = st.sidebar.multiselect("PSP Name",   all_psps,   default=all_psps)
