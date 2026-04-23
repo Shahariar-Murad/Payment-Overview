@@ -4,8 +4,29 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import os
+import io
 import warnings
 warnings.filterwarnings('ignore')
+
+# ── Resolve data directory relative to this script ───────────────────────────
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR  = os.path.join(BASE_DIR, "data")
+
+EXPECTED_FILES = {
+    "BridgerPay":  ("BridgerPay.csv",  "csv"),
+    "Coinsbuy":    ("Coinsbuy.xlsx",   "xlsx"),
+    "Confirmo":    ("Confirmo.csv",    "csv"),
+    "PayProcc":    ("PayProcc.csv",    "csv"),
+    "Zen Pay":     ("Zen_Pay.csv",     "csv"),
+}
+
+def data_files_present():
+    """Return True only when ALL five data files exist on disk."""
+    return all(
+        os.path.isfile(os.path.join(DATA_DIR, fname))
+        for fname, _ in EXPECTED_FILES.values()
+    )
 
 st.set_page_config(
     page_title="Payment Analytics Dashboard",
@@ -54,13 +75,57 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── File-uploader UI (shown only when data/ files are absent) ────────────────
+def show_uploader():
+    st.markdown("""
+    <h1 style='color:#ccd6f6;font-size:2rem;font-weight:700;margin-bottom:4px;'>
+    💳 Payment Analytics Dashboard
+    </h1>
+    <p style='color:#ff6b6b;font-size:14px;margin-bottom:8px;'>
+    ⚠️  Data files not found in <code>data/</code> folder.
+    Please upload your five source files below to continue.
+    </p>
+    """, unsafe_allow_html=True)
+
+    with st.expander("📂 Upload data files", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            up_bp = st.file_uploader("BridgerPay.csv",  type=["csv"],  key="bp")
+            up_cb = st.file_uploader("Coinsbuy.xlsx",   type=["xlsx"], key="cb")
+            up_cf = st.file_uploader("Confirmo.csv",    type=["csv"],  key="cf")
+        with col2:
+            up_pp = st.file_uploader("PayProcc.csv",    type=["csv"],  key="pp")
+            up_zp = st.file_uploader("Zen_Pay.csv",     type=["csv"],  key="zp")
+
+    uploads = {"BridgerPay": up_bp, "Coinsbuy": up_cb,
+               "Confirmo": up_cf, "PayProcc": up_pp, "Zen Pay": up_zp}
+    missing = [k for k, v in uploads.items() if v is None]
+    if missing:
+        st.info(f"Still needed: **{', '.join(missing)}**")
+        st.stop()
+    return uploads
+
 # ── Data Loading ─────────────────────────────────────────────────────────────
 @st.cache_data
-def load_data():
+def load_data(use_uploads=False, bp_bytes=None, cb_bytes=None,
+              cf_bytes=None, pp_bytes=None, zp_bytes=None):
     frames = []
 
+    # ── resolve sources ───────────────────────────────────────────────────
+    def _src(name, fname, ftype, uploaded_bytes):
+        if uploaded_bytes is not None:
+            buf = io.BytesIO(uploaded_bytes)
+            return buf
+        return os.path.join(DATA_DIR, fname)
+
+    bp_src = _src("BridgerPay", "BridgerPay.csv",  "csv",  bp_bytes)
+    cb_src = _src("Coinsbuy",   "Coinsbuy.xlsx",   "xlsx", cb_bytes)
+    cf_src = _src("Confirmo",   "Confirmo.csv",    "csv",  cf_bytes)
+    pp_src = _src("PayProcc",   "PayProcc.csv",    "csv",  pp_bytes)
+    zp_src = _src("Zen Pay",    "Zen_Pay.csv",     "csv",  zp_bytes)
+
     # ── 1. BridgerPay ──────────────────────────────────────────────────────
-    bp = pd.read_csv("data/BridgerPay.csv")
+    bp = pd.read_csv(bp_src)
     # Keep unique merchant order IDs (retry logic – keep first occurrence)
     bp = bp.drop_duplicates(subset=["merchantOrderId"], keep="first")
     bp["psp"]        = bp["pspName"]
@@ -74,7 +139,7 @@ def load_data():
     frames.append(bp[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
     # ── 2. Coinsbuy ────────────────────────────────────────────────────────
-    cb = pd.read_excel("data/Coinsbuy.xlsx")
+    cb = pd.read_excel(cb_src)
     cb["psp"]        = "Coinsbuy"
     cb["mid"]        = "Coinsbuy-Crypto-MID"
     cb["country"]    = "N/A"
@@ -86,7 +151,7 @@ def load_data():
     frames.append(cb[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
     # ── 3. Confirmo ────────────────────────────────────────────────────────
-    cf = pd.read_csv("data/Confirmo.csv", sep=",", skiprows=1)
+    cf = pd.read_csv(cf_src, sep=",", skiprows=1)
     cf["psp"]        = "Confirmo"
     cf["mid"]        = "Confirmo-Crypto-MID"
     cf["country"]    = "N/A"
@@ -98,7 +163,7 @@ def load_data():
     frames.append(cf[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
     # ── 4. PayProcc ────────────────────────────────────────────────────────
-    pp = pd.read_csv("data/PayProcc.csv")
+    pp = pd.read_csv(pp_src)
     # USD amount: if Currency==USD use Amount, else use Applied Amount (USD)
     pp["amount_usd"] = pp.apply(
         lambda r: r["Amount"] if r["Currency"] == "USD" else r["Applied Amount"], axis=1
@@ -116,7 +181,7 @@ def load_data():
     frames.append(pp[["source","psp","mid","country","amount_usd","method","is_success","status_raw"]])
 
     # ── 5. Zen Pay ─────────────────────────────────────────────────────────
-    zp = pd.read_csv("data/Zen_Pay.csv")
+    zp = pd.read_csv(zp_src)
     # Only Apple Pay and Google Pay
     zp = zp[zp["payment_channel"].isin(["Apple Pay", "Google Pay"])]
     zp["psp"]        = "Zen Pay"
@@ -134,7 +199,19 @@ def load_data():
     df["country"] = df["country"].fillna("Unknown")
     return df
 
-df_all = load_data()
+# ── Bootstrap: load data from disk or uploads ─────────────────────────────
+if data_files_present():
+    df_all = load_data()
+else:
+    uploads = show_uploader()
+    df_all = load_data(
+        use_uploads=True,
+        bp_bytes=uploads["BridgerPay"].read(),
+        cb_bytes=uploads["Coinsbuy"].read(),
+        cf_bytes=uploads["Confirmo"].read(),
+        pp_bytes=uploads["PayProcc"].read(),
+        zp_bytes=uploads["Zen Pay"].read(),
+    )
 
 # ── Sidebar Filters ───────────────────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 Filters")
